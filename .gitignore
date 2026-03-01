@@ -1,0 +1,11 @@
+node_modules/
+.plasmo/
+build/
+chrome-mv3-dev/
+chrome-mv3-prod/
+.env.local
+*.pem
+.claude/
+tsconfig.tsbuildinfo
+pnpm-workspace.yaml
+compare/
