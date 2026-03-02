@@ -8,7 +8,7 @@ import { matchProducts } from "~core/ai/openrouter"
 import { aiRateLimiter } from "~core/ai/rate-limiter"
 import { fallbackMatch } from "~core/ai/fallback-matcher"
 import { cacheManager } from "~core/cache/cache-manager"
-import { buildSearchQuery } from "~utils/url-patterns"
+import { buildSearchQuery, detectRegion } from "~utils/url-patterns"
 import { logger } from "~utils/logger"
 
 const handler: PlasmoMessaging.MessageHandler<ComparePricesRequest, ComparePricesResponse> = async (
@@ -27,51 +27,76 @@ const handler: PlasmoMessaging.MessageHandler<ComparePricesRequest, ComparePrice
       return
     }
 
+    const region = detectRegion(product.url)
     const query = buildSearchQuery(product)
-    logger.info("Searching for:", query)
+    logger.info(`Searching for: "${query}" in region: ${region}`)
 
     const errors: ComparisonError[] = []
     const allCandidates: ScrapedCandidate[] = []
+
+    // 2. Fire Google Shopping + all direct retailer scrapes in parallel
+    const directScrapers = getDirectScrapers(region).filter(
+      (s) => s.key !== product.retailer
+    )
+
+    const allScrapePromises = [
+      // Google Shopping
+      (async () => {
+        try {
+          const gsUrl = googleShoppingScraper.buildSearchUrl(query, region)
+          const gsHtml = await scrapeQueue.fetch(gsUrl)
+          const gsResults = googleShoppingScraper.parseSearchResults(gsHtml)
+          logger.info(`Google Shopping returned ${gsResults.length} results (HTML size: ${gsHtml.length})`)
+          return { source: "google-shopping" as const, results: gsResults }
+        } catch (err) {
+          logger.warn("Google Shopping scrape failed:", err)
+          errors.push({ retailer: "google-shopping", message: String(err) })
+          return { source: "google-shopping" as const, results: [] }
+        }
+      })(),
+      // All direct retailers in parallel
+      ...directScrapers.map(async (scraper) => {
+        try {
+          const url = scraper.buildSearchUrl(query, region)
+          const html = await scrapeQueue.fetch(url)
+          const results = scraper.parseSearchResults(html)
+          logger.info(`${scraper.key} returned ${results.length} results (HTML size: ${html.length})`)
+          if (results.length === 0 && html.length > 1000) {
+            errors.push({ retailer: scraper.key, message: "No products found in search results" })
+          }
+          return { source: scraper.key, results }
+        } catch (err) {
+          logger.warn(`${scraper.key} scrape failed:`, err)
+          errors.push({ retailer: scraper.key, message: String(err) })
+          return { source: scraper.key, results: [] }
+        }
+      })
+    ]
+
+    const scrapeResults = await Promise.all(allScrapePromises)
+
+    // Log summary
+    for (const r of scrapeResults) {
+      logger.info(`[${r.source}] ${r.results.length} candidates`)
+    }
+
+    // Collect all candidates, deduplicating by retailer if Google Shopping already covered them
     const coveredRetailers = new Set<RetailerKey>()
 
-    // 2. Scrape Google Shopping first (one request -> multiple retailers)
-    try {
-      const gsUrl = googleShoppingScraper.buildSearchUrl(query)
-      const gsHtml = await scrapeQueue.enqueue(gsUrl)
-      const gsResults = googleShoppingScraper.parseSearchResults(gsHtml)
-      for (const r of gsResults) {
+    // Add Google Shopping results first
+    const gsResult = scrapeResults.find((r) => r.source === "google-shopping")
+    if (gsResult) {
+      for (const r of gsResult.results) {
         allCandidates.push(r)
         if (r.retailer !== "unknown") coveredRetailers.add(r.retailer)
       }
-      logger.info(`Google Shopping returned ${gsResults.length} results, covering: ${[...coveredRetailers].join(", ")}`)
-    } catch (err) {
-      logger.warn("Google Shopping scrape failed:", err)
-      errors.push({ retailer: "google-shopping", message: String(err) })
     }
 
-    // 3. Fill gaps: scrape retailers not covered by Google Shopping
-    // Skip the source product's retailer
-    const directScrapers = getDirectScrapers().filter(
-      (s) => s.key !== product.retailer && !coveredRetailers.has(s.key)
-    )
-
-    const scrapePromises = directScrapers.map(async (scraper) => {
-      try {
-        const url = scraper.buildSearchUrl(query)
-        const html = await scrapeQueue.enqueue(url)
-        const results = scraper.parseSearchResults(html)
-        logger.info(`${scraper.key} returned ${results.length} results`)
-        return results
-      } catch (err) {
-        logger.warn(`${scraper.key} scrape failed:`, err)
-        errors.push({ retailer: scraper.key, message: String(err) })
-        return []
-      }
-    })
-
-    const directResults = await Promise.all(scrapePromises)
-    for (const results of directResults) {
-      allCandidates.push(...results)
+    // Add direct scraper results only for retailers not already covered
+    for (const result of scrapeResults) {
+      if (result.source === "google-shopping") continue
+      if (coveredRetailers.has(result.source as RetailerKey)) continue
+      allCandidates.push(...result.results)
     }
 
     if (allCandidates.length === 0) {
@@ -88,7 +113,7 @@ const handler: PlasmoMessaging.MessageHandler<ComparePricesRequest, ComparePrice
       return
     }
 
-    // 4. AI matching (or fallback)
+    // 3. AI matching (or fallback)
     let competitors: CompetitorPrice[]
     if (aiRateLimiter.canRequest()) {
       try {
@@ -113,8 +138,10 @@ const handler: PlasmoMessaging.MessageHandler<ComparePricesRequest, ComparePrice
       errors
     }
 
-    // 5. Cache the result
-    await cacheManager.set(cacheKey, result)
+    // 4. Cache the result (only if we got actual competitors — don't cache failures)
+    if (competitors.length > 0) {
+      await cacheManager.set(cacheKey, result)
+    }
 
     res.send({ success: true, result })
   } catch (err) {

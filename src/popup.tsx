@@ -1,6 +1,7 @@
 import "./style.css"
 
 import { useEffect, useState } from "react"
+import { sendToBackground } from "@plasmohq/messaging"
 import { Storage } from "@plasmohq/storage"
 
 import type { ComparisonResult } from "~types/product"
@@ -118,12 +119,22 @@ function Popup() {
           </div>
         )}
 
-        {/* Settings link */}
-        <button
-          onClick={() => chrome.runtime.openOptionsPage()}
-          className="w-full text-sm text-teal-600 hover:text-teal-700 text-center py-1">
-          Settings
-        </button>
+        {/* Actions */}
+        <div className="flex gap-2">
+          <button
+            onClick={async () => {
+              await sendToBackground({ name: "clear-cache" })
+              setLastResult(null)
+            }}
+            className="flex-1 text-sm text-gray-500 hover:text-red-600 text-center py-1">
+            Clear Cache
+          </button>
+          <button
+            onClick={() => chrome.runtime.openOptionsPage()}
+            className="flex-1 text-sm text-teal-600 hover:text-teal-700 text-center py-1">
+            Settings
+          </button>
+        </div>
       </div>
     </div>
   )

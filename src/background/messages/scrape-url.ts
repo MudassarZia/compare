@@ -10,7 +10,7 @@ const handler: PlasmoMessaging.MessageHandler<ScrapeUrlRequest, ScrapeUrlRespons
   const { url } = req.body
 
   try {
-    const html = await scrapeQueue.enqueue(url)
+    const html = await scrapeQueue.fetch(url)
     res.send({ success: true, html })
   } catch (err) {
     res.send({ success: false, error: String(err) })

@@ -1,5 +1,7 @@
 import type { ProductData, RetailerKey } from "~types/product"
 
+export type Region = "us" | "ca" | "uk"
+
 interface RetailerPattern {
   key: RetailerKey
   hostPattern: RegExp
@@ -19,7 +21,7 @@ const RETAILER_PATTERNS: RetailerPattern[] = [
   },
   {
     key: "walmart",
-    hostPattern: /walmart\.com/,
+    hostPattern: /walmart\.(com|ca)/,
     productPagePattern: /\/ip\/[^/]+\/\d+/,
     identifierExtractor: (url) => {
       const match = url.match(/\/ip\/[^/]+\/(\d+)/)
@@ -37,8 +39,8 @@ const RETAILER_PATTERNS: RetailerPattern[] = [
   },
   {
     key: "bestbuy",
-    hostPattern: /bestbuy\.com/,
-    productPagePattern: /\/site\/[^/]+\/\d+\.p/,
+    hostPattern: /bestbuy\.(com|ca)/,
+    productPagePattern: /\/site\/[^/]+\/\d+\.p|\/en-ca\/product\//,
     identifierExtractor: (url) => {
       const match = url.match(/\/(\d+)\.p/)
       return match?.[1] ?? null
@@ -46,7 +48,7 @@ const RETAILER_PATTERNS: RetailerPattern[] = [
   },
   {
     key: "ebay",
-    hostPattern: /ebay\.(com|co\.uk|de|fr)/,
+    hostPattern: /ebay\.(com|co\.uk|ca|de|fr)/,
     productPagePattern: /\/itm\/\d+/,
     identifierExtractor: (url) => {
       const match = url.match(/\/itm\/(\d+)/)
@@ -55,7 +57,7 @@ const RETAILER_PATTERNS: RetailerPattern[] = [
   },
   {
     key: "newegg",
-    hostPattern: /newegg\.com/,
+    hostPattern: /newegg\.(com|ca)/,
     productPagePattern: /\/p\/[A-Z0-9-]+|\/Product\/Product\.aspx/,
     identifierExtractor: (url) => {
       const match = url.match(/\/p\/([A-Z0-9-]+)/) || url.match(/Item=([A-Z0-9-]+)/)
@@ -76,6 +78,17 @@ export function detectRetailer(url: string): RetailerKey {
     // invalid URL
   }
   return "unknown"
+}
+
+export function detectRegion(url: string): Region {
+  try {
+    const hostname = new URL(url).hostname
+    if (/\.ca$/.test(hostname)) return "ca"
+    if (/\.co\.uk$/.test(hostname)) return "uk"
+  } catch {
+    // invalid URL
+  }
+  return "us"
 }
 
 export function isProductPage(url: string): boolean {

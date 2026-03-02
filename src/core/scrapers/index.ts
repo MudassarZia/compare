@@ -1,4 +1,5 @@
 import type { RetailerKey } from "~types/product"
+import type { Region } from "~utils/url-patterns"
 
 import { amazonScraper } from "./amazon"
 import { bestbuyScraper } from "./bestbuy"
@@ -19,7 +20,9 @@ export interface ScrapedCandidate {
 
 export interface Scraper {
   key: RetailerKey
-  buildSearchUrl: (query: string) => string
+  /** Regions this retailer operates in */
+  regions: Region[]
+  buildSearchUrl: (query: string, region: Region) => string
   parseSearchResults: (html: string) => ScrapedCandidate[]
 }
 
@@ -41,8 +44,10 @@ export function getAllScrapers(): Scraper[] {
   return Object.values(scraperMap)
 }
 
-export function getDirectScrapers(): Scraper[] {
-  return Object.values(scraperMap).filter((s) => s.key !== "google-shopping")
+export function getDirectScrapers(region: Region): Scraper[] {
+  return Object.values(scraperMap).filter(
+    (s) => s.key !== "google-shopping" && s.regions.includes(region)
+  )
 }
 
 export { googleShoppingScraper }

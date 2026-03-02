@@ -11,6 +11,16 @@ interface ComparisonPanelProps {
   onClose: () => void
 }
 
+function formatErrorMessage(msg: string): string {
+  if (msg.includes("403") || msg.includes("429")) return "site is blocking requests"
+  if (msg.includes("No products found")) return "no matching products found"
+  if (msg.includes("Failed to fetch") || msg.includes("NetworkError")) return "connection blocked (may need host permission)"
+  if (msg.includes("consent")) return "blocked by consent page"
+  if (msg.includes("HTTP 5")) return "site returned a server error"
+  if (msg.includes("HTTP 4")) return "request rejected by site"
+  return msg.length > 60 ? msg.slice(0, 60) + "..." : msg
+}
+
 export function ComparisonPanel({ result, isLoading, error, onClose }: ComparisonPanelProps) {
   const cheapest = result?.competitors?.[0]
   const sourcePrice = result?.sourceProduct?.price
@@ -66,9 +76,7 @@ export function ComparisonPanel({ result, isLoading, error, onClose }: Compariso
           <div className="space-y-1">
             {result.errors.map((e, i) => (
               <p key={i} className="text-xs text-amber-600">
-                Could not check {e.retailer} — {e.message.includes("403") || e.message.includes("429")
-                  ? "site may be blocking requests"
-                  : "connection failed"}
+                Could not check {e.retailer} — {formatErrorMessage(e.message)}
               </p>
             ))}
           </div>

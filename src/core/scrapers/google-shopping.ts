@@ -1,145 +1,158 @@
 import type { Scraper, ScrapedCandidate } from "./index"
+import type { Region } from "~utils/url-patterns"
 import { parsePrice } from "~utils/price-utils"
+import { parseHTML } from "~utils/html-parser"
+import { scanGoogleShoppingHtml } from "~utils/html-scanner"
+import { logger } from "~utils/logger"
+
+const GOOGLE_DOMAINS: Record<Region, string> = {
+  us: "www.google.com",
+  ca: "www.google.ca",
+  uk: "www.google.co.uk"
+}
 
 export const googleShoppingScraper: Scraper = {
   key: "google-shopping",
+  regions: ["us", "ca", "uk"],
 
-  buildSearchUrl: (query: string) => {
+  buildSearchUrl: (query: string, region: Region) => {
+    const domain = GOOGLE_DOMAINS[region]
     const encoded = encodeURIComponent(query)
-    return `https://www.google.com/search?tbm=shop&q=${encoded}&hl=en`
+    // ucbcb=1 helps bypass consent pages; gl sets country; num limits results
+    const gl = region === "uk" ? "gb" : region
+    return `https://${domain}/search?tbm=shop&q=${encoded}&hl=en&gl=${gl}&ucbcb=1&num=10`
   },
 
   parseSearchResults: (html: string): ScrapedCandidate[] => {
-    const candidates: ScrapedCandidate[] = []
-    const parser = new DOMParser()
-    const doc = parser.parseFromString(html, "text/html")
+    logger.debug(`Google Shopping HTML size: ${html.length}, first 200 chars: ${html.slice(0, 200).replace(/\n/g, ' ')}`)
 
-    // Google Shopping results typically appear in divs with class "sh-dgr__gr-auto" or similar
-    // The structure changes frequently, so we try multiple selectors
-    const resultSelectors = [
-      ".sh-dgr__gr-auto",
-      ".sh-dlr__list-result",
-      "[data-docid]",
-      ".sh-pr__product-results-grid .sh-pr__product-result"
-    ]
-
-    let resultEls: NodeListOf<Element> | null = null
-    for (const selector of resultSelectors) {
-      const els = doc.querySelectorAll(selector)
-      if (els.length > 0) {
-        resultEls = els
-        break
-      }
+    // Try CSS selectors first
+    const domResults = parseDom(html)
+    if (domResults.length > 0) {
+      logger.debug(`Google Shopping DOM parser found ${domResults.length} results`)
+      return domResults
     }
 
-    if (!resultEls) {
-      // Fallback: try to extract from any elements with price patterns
-      return extractFromGenericElements(doc)
+    // Fallback: scan embedded JSON data in the HTML
+    logger.debug("Google Shopping DOM selectors matched nothing, trying JSON scan")
+    const scanned = scanGoogleShoppingHtml(html, 10)
+    if (scanned.length > 0) {
+      logger.debug(`Google Shopping JSON scan found ${scanned.length} results`)
+    } else {
+      logger.warn(`Google Shopping: 0 results from both DOM and JSON scan (HTML ${html.length} bytes)`)
     }
-
-    for (const el of resultEls) {
-      if (candidates.length >= 10) break
-
-      const title =
-        el.querySelector("h3")?.textContent?.trim() ??
-        el.querySelector("h4")?.textContent?.trim() ??
-        el.querySelector("[role='heading']")?.textContent?.trim() ??
-        null
-      if (!title) continue
-
-      // Look for price elements
-      const priceEl =
-        el.querySelector(".sh-dgr__content .a8Pemb")?.textContent ??
-        el.querySelector("[aria-label*='$']")?.textContent ??
-        el.querySelector("span")?.textContent ??
-        null
-
-      let price: number | null = null
-      let currency = "USD"
-
-      // Try all spans for price-like patterns
-      if (!priceEl || !parsePrice(priceEl)) {
-        for (const span of el.querySelectorAll("span, b")) {
-          const text = span.textContent?.trim() || ""
-          if (/^\$[\d,.]+$/.test(text) || /^[\d,.]+\s*(USD|EUR|GBP)$/.test(text)) {
-            const parsed = parsePrice(text)
-            if (parsed) {
-              price = parsed.price
-              currency = parsed.currency
-              break
-            }
-          }
-        }
-      } else {
-        const parsed = parsePrice(priceEl)
-        if (parsed) {
-          price = parsed.price
-          currency = parsed.currency
-        }
-      }
-
-      if (price === null) continue
-
-      // Try to find the store/retailer name
-      const storeEl =
-        el.querySelector(".sh-dgr__store-name")?.textContent?.trim() ??
-        el.querySelector(".aULzUe")?.textContent?.trim() ??
-        el.querySelector(".E5ocAb")?.textContent?.trim() ??
-        null
-
-      // Try to get the link
-      const link = el.querySelector("a")?.getAttribute("href") ?? null
-      const fullUrl = link
-        ? link.startsWith("http")
-          ? link
-          : `https://www.google.com${link}`
-        : ""
-
-      const image = el.querySelector("img")?.getAttribute("src") ?? null
-
-      const retailer = detectRetailerFromStore(storeEl, fullUrl)
-
-      candidates.push({
-        title,
-        price,
-        currency,
-        url: fullUrl,
-        retailer,
-        image
-      })
-    }
-
-    return candidates
+    return scanned.map((p) => ({
+      title: p.title,
+      price: p.price,
+      currency: p.currency,
+      url: p.url,
+      retailer: "unknown" as const,
+      image: p.image
+    }))
   }
 }
 
-function extractFromGenericElements(doc: Document): ScrapedCandidate[] {
+function parseDom(html: string): ScrapedCandidate[] {
   const candidates: ScrapedCandidate[] = []
+  const doc = parseHTML(html)
 
-  // Try a broader approach: find elements that contain both a title-like heading and a price
-  const allLinks = doc.querySelectorAll("a[href*='/shopping/product/'], a[href*='tbm=shop']")
+  // Check for consent/redirect pages
+  const bodyText = doc.querySelector("body")?.textContent ?? ""
+  if (bodyText.includes("Before you continue") || bodyText.includes("consent.google")) {
+    logger.warn("Google Shopping returned a consent page")
+    return []
+  }
 
-  for (const link of allLinks) {
-    if (candidates.length >= 10) break
-    const container = link.closest("div") || link
-    const title = container.querySelector("h3, h4, [role='heading']")?.textContent?.trim()
-    if (!title) continue
+  const resultSelectors = [
+    ".sh-dgr__gr-auto",
+    ".sh-dlr__list-result",
+    "[data-docid]",
+    ".sh-pr__product-results-grid .sh-pr__product-result",
+    ".sh-np__click-target",
+    // Broader fallback selectors
+    "[data-ved] .sh-dgr__content",
+    ".commercial-unit-desktop-rhs .pla-unit",
+    ".mnr-c.pla-unit"
+  ]
 
-    for (const span of container.querySelectorAll("span, b")) {
-      const text = span.textContent?.trim() || ""
-      const parsed = parsePrice(text)
-      if (parsed && parsed.price > 0 && parsed.price < 100000) {
-        candidates.push({
-          title,
-          price: parsed.price,
-          currency: parsed.currency,
-          url: (link as HTMLAnchorElement).href || "",
-          retailer: "unknown",
-          image: container.querySelector("img")?.getAttribute("src") ?? null
-        })
+  let resultEls: ReturnType<typeof doc.querySelectorAll> | null = null
+  for (const selector of resultSelectors) {
+    try {
+      const els = doc.querySelectorAll(selector)
+      if (els.length > 0) {
+        resultEls = els
+        logger.debug(`Google Shopping matched selector: ${selector} (${els.length} elements)`)
         break
       }
+    } catch {
+      // node-html-parser may not support all selectors
     }
+  }
+
+  if (!resultEls) {
+    logger.debug("Google Shopping: no DOM selectors matched")
+    return []
+  }
+
+  for (const el of resultEls) {
+    if (candidates.length >= 10) break
+
+    const title =
+      el.querySelector("h3")?.textContent?.trim() ??
+      el.querySelector("h4")?.textContent?.trim() ??
+      el.querySelector("[role='heading']")?.textContent?.trim() ??
+      el.querySelector("a[aria-label]")?.getAttribute("aria-label")?.trim() ??
+      null
+    if (!title) continue
+
+    let price: number | null = null
+    let currency = "USD"
+
+    // Search all text-containing elements for price patterns
+    for (const child of el.querySelectorAll("span, b, div, a")) {
+      const text = child.textContent?.trim() || ""
+      if (!text || text.length > 20) continue
+      // Match prices like $299.99, C$299.99, £199.99, €249.99
+      if (/^[C£€]?\$?[\d,.]+$/.test(text) || /^\$[\d,.]+$/.test(text)) {
+        const parsed = parsePrice(text)
+        if (parsed && parsed.price > 0 && parsed.price < 50000) {
+          price = parsed.price
+          currency = parsed.currency
+          break
+        }
+      }
+    }
+
+    // Also try aria-label for price (Google sometimes puts price info there)
+    if (price === null) {
+      const ariaLabel = el.querySelector("[aria-label*='$']")?.getAttribute("aria-label") ?? ""
+      if (ariaLabel) {
+        const priceMatch = ariaLabel.match(/\$[\d,.]+/)
+        if (priceMatch) {
+          const parsed = parsePrice(priceMatch[0])
+          if (parsed) { price = parsed.price; currency = parsed.currency }
+        }
+      }
+    }
+
+    if (price === null) continue
+
+    const storeText =
+      el.querySelector(".sh-dgr__store-name")?.textContent?.trim() ??
+      el.querySelector(".aULzUe")?.textContent?.trim() ??
+      el.querySelector(".E5ocAb")?.textContent?.trim() ??
+      el.querySelector(".LrzXr")?.textContent?.trim() ??
+      null
+
+    const link = el.querySelector("a")?.getAttribute("href") ?? null
+    const fullUrl = link
+      ? link.startsWith("http") ? link : `https://www.google.com${link}`
+      : ""
+
+    const image = el.querySelector("img")?.getAttribute("src") ?? null
+    const retailer = detectRetailerFromStore(storeText, fullUrl)
+
+    candidates.push({ title, price, currency, url: fullUrl, retailer, image })
   }
 
   return candidates

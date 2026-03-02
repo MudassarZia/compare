@@ -1,24 +1,39 @@
 import type { Scraper, ScrapedCandidate } from "./index"
+import type { Region } from "~utils/url-patterns"
 import { parsePrice } from "~utils/price-utils"
+import { parseHTML } from "~utils/html-parser"
+import { scanHtmlForProducts } from "~utils/html-scanner"
+import { logger } from "~utils/logger"
+
+const AMAZON_DOMAINS: Record<Region, string> = {
+  us: "www.amazon.com",
+  ca: "www.amazon.ca",
+  uk: "www.amazon.co.uk"
+}
 
 export const amazonScraper: Scraper = {
   key: "amazon",
+  regions: ["us", "ca", "uk"],
 
-  buildSearchUrl: (query: string) => {
-    return `https://www.amazon.com/s?k=${encodeURIComponent(query)}`
+  buildSearchUrl: (query: string, region: Region) => {
+    const domain = AMAZON_DOMAINS[region]
+    return `https://${domain}/s?k=${encodeURIComponent(query)}`
   },
 
   parseSearchResults: (html: string): ScrapedCandidate[] => {
-    const candidates: ScrapedCandidate[] = []
-    const parser = new DOMParser()
-    const doc = parser.parseFromString(html, "text/html")
+    const doc = parseHTML(html)
 
+    // Detect domain from page
+    const canonical = doc.querySelector("link[rel='canonical']")?.getAttribute("href") ?? ""
+    const domain = canonical.includes("amazon.ca") ? "www.amazon.ca"
+      : canonical.includes("amazon.co.uk") ? "www.amazon.co.uk"
+      : "www.amazon.com"
+
+    const candidates: ScrapedCandidate[] = []
     const results = doc.querySelectorAll('[data-component-type="s-search-result"]')
 
     for (const result of results) {
       if (candidates.length >= 5) break
-
-      // Skip sponsored results
       if (result.querySelector(".puis-sponsored-label-text")) continue
 
       const title =
@@ -43,15 +58,20 @@ export const amazonScraper: Scraper = {
       }
       if (price === null) continue
 
-      const linkEl = result.querySelector("h2 a")
-      const href = linkEl?.getAttribute("href") ?? ""
-      const url = href.startsWith("http") ? href : `https://www.amazon.com${href}`
-
+      const href = result.querySelector("h2 a")?.getAttribute("href") ?? ""
+      const url = href.startsWith("http") ? href : `https://${domain}${href}`
       const image = result.querySelector(".s-image")?.getAttribute("src") ?? null
 
       candidates.push({ title, price, currency, url, retailer: "amazon", image })
     }
 
-    return candidates
+    if (candidates.length > 0) return candidates
+
+    // Fallback: regex scan
+    logger.debug("Amazon DOM selectors matched nothing, trying fallback scan")
+    return scanHtmlForProducts(html, "amazon", domain).map((p) => ({
+      ...p,
+      retailer: "amazon" as const
+    }))
   }
 }

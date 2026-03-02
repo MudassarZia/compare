@@ -12,12 +12,18 @@ import { sendToBackground } from "@plasmohq/messaging"
 export const config: PlasmoCSConfig = {
   matches: [
     "https://www.amazon.com/*",
+    "https://www.amazon.ca/*",
     "https://www.amazon.co.uk/*",
     "https://www.walmart.com/*",
+    "https://www.walmart.ca/*",
     "https://www.target.com/*",
     "https://www.bestbuy.com/*",
+    "https://www.bestbuy.ca/*",
     "https://www.ebay.com/*",
-    "https://www.newegg.com/*"
+    "https://www.ebay.ca/*",
+    "https://www.ebay.co.uk/*",
+    "https://www.newegg.com/*",
+    "https://www.newegg.ca/*"
   ],
   run_at: "document_idle"
 }

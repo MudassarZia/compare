@@ -1,70 +1,53 @@
-import { randomDelay } from "~utils/delay"
 import { logger } from "~utils/logger"
 
-interface QueueItem {
-  url: string
-  resolve: (html: string) => void
-  reject: (error: Error) => void
-}
-
-const RATE_LIMIT = 5 // requests per window
+const RATE_LIMIT = 10 // requests per window
 const RATE_WINDOW_MS = 60_000 // 1 minute
-const MIN_DELAY_MS = 2000
-const MAX_DELAY_MS = 5000
 
-const BROWSER_HEADERS = {
-  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+const BROWSER_HEADERS: Record<string, string> = {
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
   "Accept-Language": "en-US,en;q=0.9",
   "Cache-Control": "no-cache",
-  Pragma: "no-cache"
+  Pragma: "no-cache",
+  "Sec-Fetch-Dest": "document",
+  "Sec-Fetch-Mode": "navigate",
+  "Sec-Fetch-Site": "none",
+  "Sec-Fetch-User": "?1",
+  "Upgrade-Insecure-Requests": "1"
 }
 
 class ScrapeQueue {
-  private queue: QueueItem[] = []
-  private processing = false
   private timestamps: number[] = []
 
-  async enqueue(url: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-      this.queue.push({ url, resolve, reject })
-      this.processNext()
+  /** Fetch a URL with rate limiting. Requests fire immediately if under the limit. */
+  async fetch(url: string): Promise<string> {
+    await this.waitForSlot()
+
+    logger.debug("Scraping:", url)
+    const response = await globalThis.fetch(url, {
+      headers: BROWSER_HEADERS,
+      credentials: "omit",
+      redirect: "follow"
     })
-  }
 
-  private async processNext() {
-    if (this.processing || this.queue.length === 0) return
+    this.timestamps.push(Date.now())
 
-    this.processing = true
-    const item = this.queue.shift()!
-
-    try {
-      await this.waitForRateLimit()
-      await randomDelay(MIN_DELAY_MS, MAX_DELAY_MS)
-
-      logger.debug("Scraping:", item.url)
-      const response = await fetch(item.url, {
-        headers: BROWSER_HEADERS,
-        credentials: "omit"
-      })
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-      }
-
-      const html = await response.text()
-      this.timestamps.push(Date.now())
-      item.resolve(html)
-    } catch (err) {
-      item.reject(err instanceof Error ? err : new Error(String(err)))
-    } finally {
-      this.processing = false
-      this.processNext()
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText} (${response.url})`)
     }
+
+    const text = await response.text()
+    logger.debug(`Response from ${new URL(url).hostname}: ${text.length} bytes, final URL: ${response.url}`)
+
+    // Log first 300 chars for debugging (helps detect captcha/consent pages)
+    if (text.length < 5000) {
+      logger.warn(`Small response from ${new URL(url).hostname} (${text.length} bytes) — may be a captcha/consent page`)
+    }
+
+    return text
   }
 
-  private async waitForRateLimit() {
+  private async waitForSlot() {
     const now = Date.now()
-    // Remove timestamps outside the rate window
     this.timestamps = this.timestamps.filter((t) => now - t < RATE_WINDOW_MS)
 
     if (this.timestamps.length >= RATE_LIMIT) {

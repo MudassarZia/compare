@@ -12,6 +12,7 @@
   "dependencies": {
     "@plasmohq/messaging": "^0.7.0",
     "@plasmohq/storage": "^1.13.0",
+    "node-html-parser": "^7.0.2",
     "plasmo": "^0.90.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -29,14 +30,22 @@
   },
   "manifest": {
     "host_permissions": [
-      "https://www.amazon.com/*",
-      "https://www.amazon.co.uk/*",
-      "https://www.walmart.com/*",
-      "https://www.target.com/*",
-      "https://www.bestbuy.com/*",
-      "https://www.ebay.com/*",
-      "https://www.newegg.com/*",
-      "https://www.google.com/search*",
+      "https://*.amazon.com/*",
+      "https://*.amazon.ca/*",
+      "https://*.amazon.co.uk/*",
+      "https://*.walmart.com/*",
+      "https://*.walmart.ca/*",
+      "https://*.target.com/*",
+      "https://*.bestbuy.com/*",
+      "https://*.bestbuy.ca/*",
+      "https://*.ebay.com/*",
+      "https://*.ebay.ca/*",
+      "https://*.ebay.co.uk/*",
+      "https://*.newegg.com/*",
+      "https://*.newegg.ca/*",
+      "https://*.google.com/*",
+      "https://*.google.ca/*",
+      "https://*.google.co.uk/*",
       "https://openrouter.ai/*"
     ],
     "permissions": [
